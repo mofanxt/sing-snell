@@ -18,7 +18,6 @@ import (
 
 const (
 	maxUDPRequestHeaderLen = 1 + 1 + 255 + 2
-	minUDPPayloadLimit     = frameSize - resetRecordOverhead
 )
 
 type clientPacketConn struct {
@@ -216,7 +215,8 @@ func (c *clientPacketConn) RearHeadroom() int {
 }
 
 func (c *clientPacketConn) WriterMTU() int {
-	return minUDPPayloadLimit - maxUDPRequestHeaderLen
+	// UDP读取必须保留完整数据报；实际记录长度由写入端校验。
+	return buf.UDPBufferSize
 }
 
 func (c *clientPacketConn) Upstream() any {

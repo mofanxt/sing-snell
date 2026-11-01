@@ -20,7 +20,6 @@ import (
 
 const (
 	maxUDPResponseHeaderLen = 1 + 16 + 2
-	minUDPPayloadLimit      = framePayloadStep
 )
 
 type serverPacketConn struct {
@@ -245,7 +244,8 @@ func (c *serverPacketConn) RearHeadroom() int {
 }
 
 func (c *serverPacketConn) WriterMTU() int {
-	return minUDPPayloadLimit - maxUDPResponseHeaderLen
+	// 避免大回包在UDP读取阶段被静默截断。
+	return buf.UDPBufferSize
 }
 
 func (c *serverPacketConn) Upstream() any {

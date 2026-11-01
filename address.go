@@ -82,6 +82,12 @@ func ReadUDPRequestAddress(buffer *buf.Buffer) (M.Socksaddr, error) {
 	return udpIPSerializer.ReadAddrPort(buffer)
 }
 
+// IsUDPResponseSource reports whether source can be sent as a UDP response
+// address. Outbounds may report a domain source, which the protocol cannot carry.
+func IsUDPResponseSource(source M.Socksaddr) bool {
+	return source.Unwrap().Addr.IsValid()
+}
+
 // snell-server v6.0.0b4: FUN_001431c0: UDP response sources are emitted as literal IPs only.
 func WriteUDPResponseAddress(buffer *buf.Buffer, source M.Socksaddr) error {
 	source = source.Unwrap()

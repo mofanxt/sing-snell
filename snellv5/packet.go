@@ -142,6 +142,12 @@ func (c *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksad
 	}
 	recordWriter := c.writer
 	c.writeAccess.Unlock()
+	// Drop a reply with a domain source instead of failing the whole UDP
+	// session, which may carry other destinations.
+	if !snell.IsUDPResponseSource(destination) {
+		buffer.Release()
+		return nil
+	}
 	header := buf.With(buffer.ExtendHeader(c.responseAddrLen(destination)))
 	err := snell.WriteUDPResponseAddress(header, destination)
 	if err != nil {
@@ -193,15 +199,26 @@ func (w *serverPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destin
 	}
 	recordWriter := w.writer
 	w.access.Unlock()
+	kept := buffers[:0]
 	for index, buffer := range buffers {
-		header := buf.With(buffer.ExtendHeader(w.conn.responseAddrLen(destinations[index])))
-		err := snell.WriteUDPResponseAddress(header, destinations[index])
+		destination := destinations[index]
+		if !snell.IsUDPResponseSource(destination) {
+			buffer.Release()
+			continue
+		}
+		header := buf.With(buffer.ExtendHeader(w.conn.responseAddrLen(destination)))
+		err := snell.WriteUDPResponseAddress(header, destination)
 		if err != nil {
-			buf.ReleaseMulti(buffers)
+			buf.ReleaseMulti(kept)
+			buf.ReleaseMulti(buffers[index:])
 			return err
 		}
+		kept = append(kept, buffer)
 	}
-	return recordWriter.WriteVectorised(buffers)
+	if len(kept) == 0 {
+		return nil
+	}
+	return recordWriter.WriteVectorised(kept)
 }
 
 func (c *serverPacketConn) writeTunnelReply() error {

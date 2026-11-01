@@ -26,6 +26,8 @@ type reuseTCPClient interface {
 type countingTCPProxy struct {
 	address string
 	count   atomic.Int32
+	access  sync.Mutex
+	clients []*net.TCPConn
 }
 
 func (p *countingTCPProxy) Start(t *testing.T, target string) {
@@ -40,9 +42,29 @@ func (p *countingTCPProxy) Start(t *testing.T, target string) {
 				return
 			}
 			p.count.Add(1)
+			if tcpConn, isTCP := conn.(*net.TCPConn); isTCP {
+				p.access.Lock()
+				p.clients = append(p.clients, tcpConn)
+				p.access.Unlock()
+			}
 			go p.Proxy(conn, target)
 		}
 	}()
+}
+
+// DropClients closes every accepted client connection, with an RST when reset
+// is set, to simulate a pooled session dropped by the peer while idle.
+func (p *countingTCPProxy) DropClients(reset bool) {
+	p.access.Lock()
+	clients := p.clients
+	p.clients = nil
+	p.access.Unlock()
+	for _, conn := range clients {
+		if reset {
+			conn.SetLinger(0)
+		}
+		conn.Close()
+	}
 }
 
 func (p *countingTCPProxy) Proxy(conn net.Conn, target string) {

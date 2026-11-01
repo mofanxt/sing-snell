@@ -131,6 +131,69 @@ func TestV4TCPReuseClientCloseLetsActiveReadFinish(t *testing.T) {
 	require.Equal(t, int32(1), proxy.count.Load())
 }
 
+func TestV4TCPReuseSkipsDroppedIdleSession(t *testing.T) {
+	for _, obfs := range []string{"none", "http"} {
+		for _, reset := range []bool{true, false} {
+			drop := "fin"
+			if reset {
+				drop = "rst"
+			}
+			t.Run(obfs+"-"+drop, func(t *testing.T) {
+				port := freePort(t)
+				config := fmt.Sprintf("[snell-server]\nlisten = 0.0.0.0:%d\npsk = %s\nipv6 = false\n", port, testPSK)
+				options := snellv4.ClientOptions{
+					PSK:    []byte(testPSK),
+					Reuse:  true,
+					Dialer: N.SystemDialer,
+				}
+				if obfs == "http" {
+					config += "obfs = http\n"
+					options.ObfsMode = snell.ObfsModeHTTP
+					options.ObfsHost = "obfs.example"
+				}
+				startSnellServer(t, "v4", config, port)
+				var proxy countingTCPProxy
+				proxy.Start(t, fmt.Sprintf("127.0.0.1:%d", port))
+				echoPort := startTCPHalfCloseEcho(t)
+				options.Server = M.ParseSocksaddr(proxy.address)
+
+				client, err := snellv4.NewClient(options)
+				require.NoError(t, err)
+				defer client.Close()
+
+				label := "v4-reuse-" + obfs + "-" + drop
+				scenario := reuseScenario{client: client, destination: M.ParseSocksaddrHostPort("127.0.0.1", echoPort)}
+				scenario.RoundTrip(t, label+"-before-drop")
+				require.Equal(t, int32(1), proxy.count.Load())
+				proxy.DropClients(reset)
+				time.Sleep(100 * time.Millisecond)
+				scenario.RoundTrip(t, label+"-after-drop")
+				require.Equal(t, int32(2), proxy.count.Load())
+			})
+		}
+	}
+}
+
+func TestV4TCPReusePrefersMostRecentSession(t *testing.T) {
+	port := freePort(t)
+	config := fmt.Sprintf("[snell-server]\nlisten = 0.0.0.0:%d\npsk = %s\nipv6 = false\n", port, testPSK)
+	startSnellServer(t, "v4", config, port)
+	var proxy countingTCPProxy
+	proxy.Start(t, fmt.Sprintf("127.0.0.1:%d", port))
+	echoPort := startTCPHalfCloseEcho(t)
+
+	client, err := snellv4.NewClient(snellv4.ClientOptions{
+		PSK:    []byte(testPSK),
+		Reuse:  true,
+		Dialer: N.SystemDialer,
+		Server: M.ParseSocksaddr(proxy.address),
+	})
+	require.NoError(t, err)
+	defer client.Close()
+
+	reuseScenario{client: client, destination: M.ParseSocksaddrHostPort("127.0.0.1", echoPort)}.PrefersMostRecent(t, &proxy, "v4-reuse-lifo")
+}
+
 func TestV4UDP(t *testing.T) {
 	port := freePort(t)
 	config := fmt.Sprintf("[snell-server]\nlisten = 0.0.0.0:%d\npsk = %s\nipv6 = false\n", port, testPSK)

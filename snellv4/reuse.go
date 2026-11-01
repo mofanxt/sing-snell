@@ -52,15 +52,23 @@ func (c *Client) DialContext(ctx context.Context, destination M.Socksaddr) (net.
 }
 
 func (c *Client) reuseSession(ctx context.Context) (*reuseSession, error) {
-	session, found, closed := c.pool.Take()
-	if closed {
-		return nil, net.ErrClosed
-	}
-	if c.dialer == nil {
-		return nil, E.New("snell: missing dialer")
-	}
-	if found {
-		return session, nil
+	for {
+		session, found, closed := c.pool.Take()
+		if closed {
+			return nil, net.ErrClosed
+		}
+		if c.dialer == nil {
+			return nil, E.New("snell: missing dialer")
+		}
+		if !found {
+			break
+		}
+		// The connection may have been closed or reset while it was idle in the
+		// pool; discard it instead of failing the new request.
+		if reuse.CheckConn(session.raw) == nil {
+			return session, nil
+		}
+		session.Close()
 	}
 	conn, err := c.dialer.DialContext(ctx, N.NetworkTCP, c.server)
 	if err != nil {
@@ -70,7 +78,7 @@ func (c *Client) reuseSession(ctx context.Context) (*reuseSession, error) {
 		conn.Close()
 		return nil, net.ErrClosed
 	}
-	session = c.newReuseSession(conn)
+	session := c.newReuseSession(conn)
 	session.state.Store(uint32(reuse.StateActive))
 	return session, nil
 }
@@ -100,6 +108,8 @@ func (c *Client) Close() error {
 
 type reuseSession struct {
 	net.Conn
+	// raw is the connection before obfs wrapping, used to probe idle sessions.
+	raw    net.Conn
 	client *Client
 
 	state    atomic.Uint32
@@ -109,7 +119,7 @@ type reuseSession struct {
 }
 
 func (c *Client) newReuseSession(conn net.Conn) *reuseSession {
-	return &reuseSession{Conn: c.obfs.ClientConn(conn), client: c}
+	return &reuseSession{Conn: c.obfs.ClientConn(conn), raw: conn, client: c}
 }
 
 func (s *reuseSession) ReuseState() *atomic.Uint32 {

@@ -254,6 +254,66 @@ func TestV6TCPReuseClientCloseLetsActiveReadFinish(t *testing.T) {
 	}
 }
 
+func TestV6TCPReuseSkipsDroppedIdleSession(t *testing.T) {
+	for name, mode := range v6Modes {
+		for _, reset := range []bool{true, false} {
+			drop := "fin"
+			if reset {
+				drop = "rst"
+			}
+			t.Run(name+"-"+drop, func(t *testing.T) {
+				port := freePort(t)
+				startSnellServer(t, "v6", v6Config(testPSK, port, name), port)
+				var proxy countingTCPProxy
+				proxy.Start(t, fmt.Sprintf("127.0.0.1:%d", port))
+				echoPort := startTCPHalfCloseEcho(t)
+
+				client, err := snellv6.NewClient(snellv6.ClientOptions{
+					PSK:    []byte(testPSK),
+					Mode:   mode,
+					Reuse:  true,
+					Dialer: N.SystemDialer,
+					Server: M.ParseSocksaddr(proxy.address),
+				})
+				require.NoError(t, err)
+				defer client.Close()
+
+				scenario := reuseScenario{client: client, destination: M.ParseSocksaddrHostPort("127.0.0.1", echoPort)}
+				scenario.RoundTrip(t, "v6-reuse-before-drop-"+name+"-"+drop)
+				require.Equal(t, int32(1), proxy.count.Load())
+				proxy.DropClients(reset)
+				time.Sleep(100 * time.Millisecond)
+				scenario.RoundTrip(t, "v6-reuse-after-drop-"+name+"-"+drop)
+				require.Equal(t, int32(2), proxy.count.Load())
+			})
+		}
+	}
+}
+
+func TestV6TCPReusePrefersMostRecentSession(t *testing.T) {
+	for name, mode := range v6Modes {
+		t.Run(name, func(t *testing.T) {
+			port := freePort(t)
+			startSnellServer(t, "v6", v6Config(testPSK, port, name), port)
+			var proxy countingTCPProxy
+			proxy.Start(t, fmt.Sprintf("127.0.0.1:%d", port))
+			echoPort := startTCPHalfCloseEcho(t)
+
+			client, err := snellv6.NewClient(snellv6.ClientOptions{
+				PSK:    []byte(testPSK),
+				Mode:   mode,
+				Reuse:  true,
+				Dialer: N.SystemDialer,
+				Server: M.ParseSocksaddr(proxy.address),
+			})
+			require.NoError(t, err)
+			defer client.Close()
+
+			reuseScenario{client: client, destination: M.ParseSocksaddrHostPort("127.0.0.1", echoPort)}.PrefersMostRecent(t, &proxy, "v6-reuse-lifo-"+name)
+		})
+	}
+}
+
 func TestV6ServerAcceptsV6ClientLoopback(t *testing.T) {
 	for name, mode := range v6Modes {
 		t.Run(name, func(t *testing.T) {

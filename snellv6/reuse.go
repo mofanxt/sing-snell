@@ -56,15 +56,23 @@ func (c *Client) DialContext(ctx context.Context, destination M.Socksaddr) (net.
 }
 
 func (c *Client) reuseSession(ctx context.Context) (*reuseSession, error) {
-	session, found, closed := c.pool.Take()
-	if closed {
-		return nil, net.ErrClosed
-	}
-	if c.dialer == nil {
-		return nil, E.New("snell: missing dialer")
-	}
-	if found {
-		return session, nil
+	for {
+		session, found, closed := c.pool.Take()
+		if closed {
+			return nil, net.ErrClosed
+		}
+		if c.dialer == nil {
+			return nil, E.New("snell: missing dialer")
+		}
+		if !found {
+			break
+		}
+		// The connection may have been closed or reset while it was idle in the
+		// pool; discard it instead of failing the new request.
+		if reuse.CheckConn(session.Conn) == nil {
+			return session, nil
+		}
+		session.Close()
 	}
 	conn, err := c.dialer.DialContext(ctx, N.NetworkTCP, c.server)
 	if err != nil {
@@ -74,7 +82,7 @@ func (c *Client) reuseSession(ctx context.Context) (*reuseSession, error) {
 		conn.Close()
 		return nil, net.ErrClosed
 	}
-	session = c.newReuseSession(conn)
+	session := c.newReuseSession(conn)
 	session.state.Store(uint32(reuse.StateActive))
 	return session, nil
 }

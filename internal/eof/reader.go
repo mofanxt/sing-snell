@@ -21,3 +21,12 @@ func (r UnexpectedReader) Read(p []byte) (int, error) {
 func (r UnexpectedReader) Upstream() any {
 	return r.Reader
 }
+
+// Unexpected returns io.ErrUnexpectedEOF for io.EOF. Use it for reads inside
+// a record, where the stream cannot end on either side.
+func Unexpected(err error) error {
+	if err == io.EOF {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}

@@ -99,3 +99,51 @@ func TestV6ReuseWriteAfterClose(t *testing.T) {
 		return client
 	})
 }
+
+// The first write publishes the record writer while other goroutines may ask
+// for headroom; run with -race.
+func testReuseFirstWriteRace(t *testing.T, service snell.Service, newClient func(server M.Socksaddr) reuseDialer) {
+	serviceAddress := startLocalSnellService(t, service)
+	client := newClient(M.ParseSocksaddr(serviceAddress))
+	defer client.Close()
+	conn, err := client.DialContext(context.Background(), M.ParseSocksaddrHostPort("127.0.0.1", 443))
+	require.NoError(t, err)
+	defer conn.Close()
+	type writerState interface {
+		FrontHeadroom() int
+		NeedHandshakeForWrite() bool
+	}
+	state := conn.(writerState)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			state.FrontHeadroom()
+			state.NeedHandshakeForWrite()
+		}
+	}()
+	_, err = conn.Write([]byte("payload"))
+	require.NoError(t, err)
+	<-done
+	require.False(t, state.NeedHandshakeForWrite())
+}
+
+func TestV4ReuseFirstWriteRace(t *testing.T) {
+	service, err := snellv5.NewService(snellv5.ServiceOptions{PSK: []byte(testPSK), Handler: localEchoHandler{}})
+	require.NoError(t, err)
+	testReuseFirstWriteRace(t, service, func(server M.Socksaddr) reuseDialer {
+		client, err := snellv4.NewClient(snellv4.ClientOptions{PSK: []byte(testPSK), Reuse: true, Dialer: N.SystemDialer, Server: server})
+		require.NoError(t, err)
+		return client
+	})
+}
+
+func TestV6ReuseFirstWriteRace(t *testing.T) {
+	service, err := snellv6.NewService(snellv6.ServerOptions{PSK: []byte(testPSK), Handler: localEchoHandler{}})
+	require.NoError(t, err)
+	testReuseFirstWriteRace(t, service, func(server M.Socksaddr) reuseDialer {
+		client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: []byte(testPSK), Reuse: true, Dialer: N.SystemDialer, Server: server})
+		require.NoError(t, err)
+		return client
+	})
+}

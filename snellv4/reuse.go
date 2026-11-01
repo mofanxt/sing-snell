@@ -211,6 +211,8 @@ type reuseConn struct {
 	readActionCount atomic.Int32
 	readClosed      atomic.Bool
 	writeClosed     atomic.Bool
+	// writerReady publishes writer to methods that read it without access.
+	writerReady atomic.Bool
 }
 
 func (c *reuseConn) readResponse() error {
@@ -343,6 +345,7 @@ func (c *reuseConn) writeRequest(payload []byte) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.writerReady.Store(true)
 	return nil
 }
 
@@ -366,6 +369,7 @@ func (c *reuseConn) writeRequestBuffer(buffer *buf.Buffer) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.writerReady.Store(true)
 	return nil
 }
 
@@ -567,7 +571,7 @@ func (w *reuseReadWaiter) WaitReadBuffer() (*buf.Buffer, error) {
 }
 
 func (c *reuseConn) FrontHeadroom() int {
-	if c.writer != nil {
+	if c.writerReady.Load() {
 		return c.writer.FrontHeadroom()
 	}
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
@@ -587,7 +591,7 @@ func (c *reuseConn) NeedHandshakeForRead() bool {
 }
 
 func (c *reuseConn) NeedHandshakeForWrite() bool {
-	return c.writer == nil
+	return !c.writerReady.Load()
 }
 
 func (c *reuseConn) NeedAdditionalReadDeadline() bool {

@@ -18,10 +18,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-const (
-	maxUDPResponseHeaderLen = 1 + 16 + 2
-	minUDPPayloadLimit      = framePayloadStep
-)
+const maxUDPResponseHeaderLen = 1 + 16 + 2
 
 type serverPacketConn struct {
 	net.Conn
@@ -245,7 +242,9 @@ func (c *serverPacketConn) RearHeadroom() int {
 }
 
 func (c *serverPacketConn) WriterMTU() int {
-	return minUDPPayloadLimit - maxUDPResponseHeaderLen
+	// Preserve complete UDP replies instead of truncating the upstream read.
+	// The record writer still checks the protocol payload limit.
+	return buf.UDPBufferSize
 }
 
 func (c *serverPacketConn) Upstream() any {

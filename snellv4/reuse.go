@@ -220,6 +220,9 @@ type reuseConn struct {
 	closed          atomic.Bool
 	readActionCount atomic.Int32
 	readClosed      atomic.Bool
+	writeClosed     atomic.Bool
+	// writerReady publishes writer to methods that read it without access.
+	writerReady atomic.Bool
 }
 
 func (c *reuseConn) readResponse() error {
@@ -352,6 +355,7 @@ func (c *reuseConn) writeRequest(payload []byte) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.writerReady.Store(true)
 	return nil
 }
 
@@ -375,19 +379,21 @@ func (c *reuseConn) writeRequestBuffer(buffer *buf.Buffer) error {
 		return E.Cause(err, "write request")
 	}
 	c.writer = c.session.writer
+	c.writerReady.Store(true)
 	return nil
 }
 
 func (c *reuseConn) Write(p []byte) (int, error) {
-	if c.writer != nil {
-		return c.writer.Write(p)
-	}
+	// Writes hold access so that CloseWrite sends the zero chunk, and Close
+	// returns the session to the pool, only after in-flight writes finish.
 	c.access.Lock()
+	defer c.access.Unlock()
+	if c.writeClosed.Load() {
+		return 0, net.ErrClosed
+	}
 	if c.writer != nil {
-		c.access.Unlock()
 		return c.writer.Write(p)
 	}
-	defer c.access.Unlock()
 	err := c.writeRequest(p)
 	if err != nil {
 		return 0, err
@@ -396,15 +402,15 @@ func (c *reuseConn) Write(p []byte) (int, error) {
 }
 
 func (c *reuseConn) WriteBuffer(buffer *buf.Buffer) error {
-	if c.writer != nil {
-		return c.writer.WriteBuffer(buffer)
-	}
 	c.access.Lock()
+	defer c.access.Unlock()
+	if c.writeClosed.Load() {
+		buffer.Release()
+		return net.ErrClosed
+	}
 	if c.writer != nil {
-		c.access.Unlock()
 		return c.writer.WriteBuffer(buffer)
 	}
-	defer c.access.Unlock()
 	return c.writeRequestBuffer(buffer)
 }
 
@@ -423,11 +429,12 @@ type reuseVectorisedWriter struct {
 
 func (w *reuseVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 	conn := w.conn
-	if conn.writer != nil {
-		return conn.writer.CreateVectorisedWriterFor(w.upstream).WriteVectorised(buffers)
-	}
 	conn.access.Lock()
 	defer conn.access.Unlock()
+	if conn.writeClosed.Load() {
+		buf.ReleaseMulti(buffers)
+		return net.ErrClosed
+	}
 	if conn.writer != nil {
 		return conn.writer.CreateVectorisedWriterFor(w.upstream).WriteVectorised(buffers)
 	}
@@ -453,6 +460,7 @@ func (c *reuseConn) CloseWrite() error {
 	c.closeWriteOnce.Do(func() {
 		c.access.Lock()
 		defer c.access.Unlock()
+		c.writeClosed.Store(true)
 		if c.writer == nil {
 			c.closeWriteErr = c.writeRequest(nil)
 			if c.closeWriteErr != nil {
@@ -467,10 +475,21 @@ func (c *reuseConn) CloseWrite() error {
 func (c *reuseConn) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		// Reject new writes without taking access: a write blocked on the
+		// socket must not stop the release path below from closing it.
+		c.writeClosed.Store(true)
 		if !c.replyRead.Load() {
 			c.session.Release(false)
 			return
 		}
+		// A write still holding access may be blocked on the socket. Closing
+		// the session unblocks it; waiting for it to send the zero chunk could
+		// hang forever when the peer stops reading.
+		if !c.access.TryLock() {
+			c.session.Release(false)
+			return
+		}
+		c.access.Unlock()
 		c.closeErr = c.CloseWrite()
 		if c.closeErr != nil {
 			c.session.Release(false)
@@ -570,7 +589,7 @@ func (w *reuseReadWaiter) WaitReadBuffer() (*buf.Buffer, error) {
 }
 
 func (c *reuseConn) FrontHeadroom() int {
-	if c.writer != nil {
+	if c.writerReady.Load() {
 		return c.writer.FrontHeadroom()
 	}
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
@@ -590,7 +609,7 @@ func (c *reuseConn) NeedHandshakeForRead() bool {
 }
 
 func (c *reuseConn) NeedHandshakeForWrite() bool {
-	return c.writer == nil
+	return !c.writerReady.Load()
 }
 
 func (c *reuseConn) NeedAdditionalReadDeadline() bool {

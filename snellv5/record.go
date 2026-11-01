@@ -493,7 +493,9 @@ func (w *writer) WritePacketBuffer(buffer *buf.Buffer) error {
 	} else {
 		payloadLimit = framePayloadStep
 	}
-	if dataLen > payloadLimit {
+	// A UDP datagram must stay in one record: the frame payload limit only
+	// shapes stream records, so check the protocol maximum instead.
+	if dataLen > maxPayload {
 		buffer.Release()
 		return snell.ErrPayloadTooLarge
 	}
@@ -705,7 +707,9 @@ func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 		} else {
 			payloadLimit = framePayloadStep
 		}
-		if dataLen > payloadLimit {
+		// A UDP datagram must stay in one record: the frame payload limit only
+		// shapes stream records, so check the protocol maximum instead.
+		if dataLen > maxPayload {
 			buffer.Release()
 			buf.ReleaseMulti(buffers[index+1:])
 			return snell.ErrPayloadTooLarge

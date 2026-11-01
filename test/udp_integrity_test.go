@@ -85,7 +85,7 @@ func copyUDPIntegrity(source, destination N.PacketConn, batch bool) error {
 
 func TestV4UDPCopyPreservesDatagrams(t *testing.T) {
 	for _, batch := range []bool{false, true} {
-		for _, size := range []int{1000, 1162, 1200, 1350, 1400, 1500, 2000} {
+		for _, size := range []int{1000, 1162, 1200, 1350, 1400, 1500, 2000, 4000, 8000} {
 			t.Run(fmt.Sprintf("batch=%t/size=%d", batch, size), func(t *testing.T) {
 				payload := make([]byte, size)
 				rand.Read(payload)
@@ -123,7 +123,7 @@ func TestV4UDPCopyPreservesDatagrams(t *testing.T) {
 
 func TestV5UDPReplyCopyPreservesDatagrams(t *testing.T) {
 	for _, batch := range []bool{false, true} {
-		for _, size := range []int{1200, 1350, 1403, 1500, 2000} {
+		for _, size := range []int{1200, 1350, 1403, 1500, 2000, 4000, 8000} {
 			t.Run(fmt.Sprintf("batch=%t/size=%d", batch, size), func(t *testing.T) {
 				payload := make([]byte, size)
 				rand.Read(payload)

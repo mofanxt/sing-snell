@@ -717,7 +717,9 @@ func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 			panic("snell: invalid v4 payload limit")
 		}
 		dataLen := buffer.Len()
-		if dataLen > payloadLimit {
+		// A UDP datagram must stay in one record: the frame payload limit only
+		// shapes stream records, so check the protocol maximum instead.
+		if dataLen > maxPayload {
 			buffer.Release()
 			buf.ReleaseMulti(buffers[index+1:])
 			return snell.ErrPayloadTooLarge
@@ -754,7 +756,9 @@ func (w *writer) WritePacketBuffer(buffer *buf.Buffer) error {
 	if payloadLimit <= 0 || payloadLimit > maxPayload {
 		panic("snell: invalid v4 payload limit")
 	}
-	if dataLen > payloadLimit {
+	// A UDP datagram must stay in one record: the frame payload limit only
+	// shapes stream records, so check the protocol maximum instead.
+	if dataLen > maxPayload {
 		return snell.ErrPayloadTooLarge
 	}
 	w.advancePayloadLimit(payloadLimit, nowUnix)

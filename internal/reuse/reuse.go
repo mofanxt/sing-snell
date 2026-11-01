@@ -68,14 +68,17 @@ func (p *Pool[S]) IsClosed() bool {
 	return closed
 }
 
+// Take returns the most recently pooled ready session (LIFO). Reusing the
+// freshest connection lowers the chance of picking one that a peer or a
+// middlebox has already dropped; older sessions still expire by PoolMaxAge.
 func (p *Pool[S]) Take() (session S, found bool, closed bool) {
 	p.access.Lock()
 	closed = p.closed
 	var expired []S
 	now := time.Now()
 	if !closed {
-		for element := p.entries.Front(); element != nil; {
-			next := element.Next()
+		for element := p.entries.Back(); element != nil; {
+			next := element.Prev()
 			entry := element.Value
 			state := State(entry.session.ReuseState().Load())
 			if state == StateClosed {

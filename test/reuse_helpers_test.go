@@ -28,6 +28,25 @@ type countingTCPProxy struct {
 	count   atomic.Int32
 	access  sync.Mutex
 	clients []*net.TCPConn
+	uplink  []*atomic.Int64
+}
+
+// Uplink returns the client-to-server bytes forwarded on the index-th accepted connection.
+func (p *countingTCPProxy) Uplink(index int) int64 {
+	p.access.Lock()
+	defer p.access.Unlock()
+	return p.uplink[index].Load()
+}
+
+type countingWriter struct {
+	io.Writer
+	counter *atomic.Int64
+}
+
+func (w countingWriter) Write(b []byte) (int, error) {
+	// Count before forwarding so the server never sees bytes that are not counted yet.
+	w.counter.Add(int64(len(b)))
+	return w.Writer.Write(b)
 }
 
 func (p *countingTCPProxy) Start(t *testing.T, target string) {
@@ -42,12 +61,14 @@ func (p *countingTCPProxy) Start(t *testing.T, target string) {
 				return
 			}
 			p.count.Add(1)
+			counter := new(atomic.Int64)
+			p.access.Lock()
 			if tcpConn, isTCP := conn.(*net.TCPConn); isTCP {
-				p.access.Lock()
 				p.clients = append(p.clients, tcpConn)
-				p.access.Unlock()
 			}
-			go p.Proxy(conn, target)
+			p.uplink = append(p.uplink, counter)
+			p.access.Unlock()
+			go p.Proxy(conn, target, counter)
 		}
 	}()
 }
@@ -67,7 +88,7 @@ func (p *countingTCPProxy) DropClients(reset bool) {
 	}
 }
 
-func (p *countingTCPProxy) Proxy(conn net.Conn, target string) {
+func (p *countingTCPProxy) Proxy(conn net.Conn, target string, uplink *atomic.Int64) {
 	upstream, err := net.Dial("tcp", target)
 	if err != nil {
 		conn.Close()
@@ -77,7 +98,7 @@ func (p *countingTCPProxy) Proxy(conn net.Conn, target string) {
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		io.Copy(upstream, conn)
+		io.Copy(countingWriter{Writer: upstream, counter: uplink}, conn)
 		N.CloseWrite(upstream)
 	}()
 	go func() {
@@ -316,4 +337,33 @@ func (s reuseScenario) ReadWaiter(t *testing.T, label string) {
 	require.Equal(t, len(payload), len(received), "%s response length", label)
 	require.True(t, bytes.Equal(payload, received), "%s payload mismatch", label)
 	require.NoError(t, conn.Close())
+}
+
+// PrefersMostRecent opens two concurrent sessions so the client dials two
+// connections, releases them oldest first, and checks that the next request
+// reuses the most recently released one.
+func (s reuseScenario) PrefersMostRecent(t *testing.T, proxy *countingTCPProxy, label string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	older, err := s.client.DialContext(ctx, s.destination)
+	require.NoError(t, err)
+	newer, err := s.client.DialContext(ctx, s.destination)
+	require.NoError(t, err)
+	for _, conn := range []net.Conn{older, newer} {
+		_, err = conn.Write([]byte(label))
+		require.NoError(t, err)
+		require.NoError(t, N.CloseWrite(conn))
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(10*time.Second)))
+		_, err = io.ReadAll(conn)
+		require.NoError(t, err)
+	}
+	require.NoError(t, older.Close())
+	require.NoError(t, newer.Close())
+	require.Equal(t, int32(2), proxy.count.Load())
+	time.Sleep(100 * time.Millisecond)
+	olderBytes, newerBytes := proxy.Uplink(0), proxy.Uplink(1)
+	s.RoundTrip(t, label+"-reused")
+	require.Equal(t, int32(2), proxy.count.Load())
+	require.Equal(t, olderBytes, proxy.Uplink(0), "%s reused the oldest pooled session", label)
+	require.Greater(t, proxy.Uplink(1), newerBytes, "%s did not reuse the most recent pooled session", label)
 }

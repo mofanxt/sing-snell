@@ -694,6 +694,14 @@ type packetVectorisedWriter struct {
 }
 
 func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
+	// Check the whole batch before sealing any record, so that a rejected batch
+	// does not consume nonces for records that are never sent.
+	for _, buffer := range buffers {
+		if buffer.Len() > maxPayload {
+			buf.ReleaseMulti(buffers)
+			return snell.ErrPayloadTooLarge
+		}
+	}
 	var records []*buf.Buffer
 	defer func() {
 		buf.ReleaseMulti(records)
@@ -717,13 +725,8 @@ func (w *packetVectorisedWriter) WriteVectorised(buffers []*buf.Buffer) error {
 			panic("snell: invalid v4 payload limit")
 		}
 		dataLen := buffer.Len()
-		// A UDP datagram must stay in one record: the frame payload limit only
-		// shapes stream records, so check the protocol maximum instead.
-		if dataLen > maxPayload {
-			buffer.Release()
-			buf.ReleaseMulti(buffers[index+1:])
-			return snell.ErrPayloadTooLarge
-		}
+		// A UDP datagram stays in one record: the frame payload limit only
+		// shapes stream records.
 		recordWriter.advancePayloadLimit(payloadLimit, nowUnix)
 		paddingLen := recordWriter.framePaddingLen(dataLen)
 		record, err := recordWriter.makeBufferRecordLocked(buffer, paddingLen)

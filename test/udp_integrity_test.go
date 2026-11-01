@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -171,4 +172,106 @@ func TestV4UDPOversizeStillRejected(t *testing.T) {
 	payload.Extend(18000)
 	err := packetConn.WritePacket(payload, M.ParseSocksaddr("127.0.0.1:443"))
 	require.ErrorIs(t, err, snell.ErrPayloadTooLarge)
+}
+
+func udpIntegrityOversizeBatch() []*buf.Buffer {
+	small := buf.NewSize(1024)
+	small.Resize(512, 0)
+	small.Extend(100)
+	large := buf.NewSize(19000)
+	large.Resize(512, 0)
+	large.Extend(18000)
+	return []*buf.Buffer{small, large}
+}
+
+func udpIntegrityBatchWriter(t *testing.T, conn any) N.PacketBatchWriter {
+	t.Helper()
+	for {
+		creator, isCreator := conn.(interface {
+			CreatePacketBatchWriter() (N.PacketBatchWriter, bool)
+		})
+		if isCreator {
+			writer, created := creator.CreatePacketBatchWriter()
+			require.True(t, created)
+			return writer
+		}
+		wrapper, isWrapper := conn.(interface{ Upstream() any })
+		require.True(t, isWrapper, "no packet batch writer")
+		conn = wrapper.Upstream()
+	}
+}
+
+// A rejected batch must not seal any of its records, or the peer would fail
+// to open the records written after it.
+func TestV4UDPRejectedBatchKeepsSession(t *testing.T) {
+	received := make(chan string, 1)
+	packetConn := newUDPIntegrityPair(t, udpIntegrityHandler{handle: func(conn N.PacketConn) {
+		for {
+			buffer := buf.NewPacket()
+			_, err := conn.ReadPacket(buffer)
+			if err != nil {
+				buffer.Release()
+				received <- err.Error()
+				return
+			}
+			payload := string(buffer.Bytes())
+			buffer.Release()
+			if payload != "first" {
+				received <- payload
+				return
+			}
+		}
+	}})
+	destination := M.ParseSocksaddr("127.0.0.1:443")
+	first := buf.NewSize(1024)
+	first.Resize(512, 0)
+	first.WriteString("first")
+	require.NoError(t, packetConn.WritePacket(first, destination))
+	writer := udpIntegrityBatchWriter(t, packetConn)
+	err := writer.WritePacketBatch(udpIntegrityOversizeBatch(), []M.Socksaddr{destination, destination})
+	require.ErrorIs(t, err, snell.ErrPayloadTooLarge)
+	after := buf.NewSize(1024)
+	after.Resize(512, 0)
+	after.WriteString("after")
+	require.NoError(t, packetConn.WritePacket(after, destination))
+	select {
+	case payload := <-received:
+		require.Equal(t, "after", payload)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the packet after the rejected batch")
+	}
+}
+
+func TestV5UDPRejectedReplyBatchKeepsSession(t *testing.T) {
+	done := make(chan error, 1)
+	packetConn := newUDPIntegrityPair(t, udpIntegrityHandler{handle: func(conn N.PacketConn) {
+		request := buf.NewPacket()
+		_, err := conn.ReadPacket(request)
+		request.Release()
+		if err != nil {
+			done <- err
+			return
+		}
+		source := M.ParseSocksaddr("127.0.0.1:443")
+		writer := udpIntegrityBatchWriter(t, conn)
+		err = writer.WritePacketBatch(udpIntegrityOversizeBatch(), []M.Socksaddr{source, source})
+		if !errors.Is(err, snell.ErrPayloadTooLarge) {
+			done <- fmt.Errorf("batch error: %v", err)
+			return
+		}
+		reply := buf.NewSize(1024)
+		reply.Resize(512, 0)
+		reply.WriteString("after")
+		done <- conn.WritePacket(reply, source)
+	}})
+	request := buf.NewSize(1024)
+	request.Resize(512, 0)
+	request.WriteByte(1)
+	require.NoError(t, packetConn.WritePacket(request, M.ParseSocksaddr("127.0.0.1:443")))
+	require.NoError(t, <-done)
+	response := buf.NewPacket()
+	defer response.Release()
+	_, err := packetConn.ReadPacket(response)
+	require.NoError(t, err)
+	require.Equal(t, "after", string(response.Bytes()))
 }

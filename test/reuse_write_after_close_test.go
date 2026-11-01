@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,6 +143,116 @@ func TestV6ReuseFirstWriteRace(t *testing.T) {
 	service, err := snellv6.NewService(snellv6.ServerOptions{PSK: []byte(testPSK), Handler: localEchoHandler{}})
 	require.NoError(t, err)
 	testReuseFirstWriteRace(t, service, func(server M.Socksaddr) reuseDialer {
+		client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: []byte(testPSK), Reuse: true, Dialer: N.SystemDialer, Server: server})
+		require.NoError(t, err)
+		return client
+	})
+}
+
+// stalledReadHandler replies once and then stops reading, so client writes
+// eventually block on the socket.
+type stalledReadHandler struct {
+	localEchoHandler
+	release chan struct{}
+}
+
+func (h stalledReadHandler) NewConnectionEx(_ context.Context, conn net.Conn, _, _ M.Socksaddr, onClose N.CloseHandlerFunc) {
+	go func() {
+		defer func() {
+			conn.Close()
+			if onClose != nil {
+				onClose(nil)
+			}
+		}()
+		_, err := conn.Write([]byte("reply"))
+		if err != nil {
+			return
+		}
+		<-h.release
+	}()
+}
+
+// Close must not wait for a write that is blocked because the peer stopped
+// reading; it closes the session, which also ends the blocked write.
+func testReuseCloseDuringBlockedWrite(t *testing.T, newService func(handler stalledReadHandler) snell.Service, newClient func(server M.Socksaddr) reuseDialer) {
+	handler := stalledReadHandler{release: make(chan struct{})}
+	defer close(handler.release)
+	serviceAddress := startLocalSnellService(t, newService(handler))
+	client := newClient(M.ParseSocksaddr(serviceAddress))
+	defer client.Close()
+	conn, err := client.DialContext(context.Background(), M.ParseSocksaddrHostPort("127.0.0.1", 443))
+	require.NoError(t, err)
+	_, err = conn.Write([]byte("request"))
+	require.NoError(t, err)
+	reply := make([]byte, 5)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, err = io.ReadFull(conn, reply)
+	require.NoError(t, err)
+	require.Equal(t, "reply", string(reply))
+
+	var written atomic.Int64
+	writeDone := make(chan error, 1)
+	go func() {
+		chunk := make([]byte, 64*1024)
+		for written.Load() < 1<<30 {
+			n, err := conn.Write(chunk)
+			written.Add(int64(n))
+			if err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
+	}()
+	// Wait until the writes stall.
+	last := int64(-1)
+	for {
+		time.Sleep(200 * time.Millisecond)
+		current := written.Load()
+		if current == last {
+			break
+		}
+		last = current
+		select {
+		case err := <-writeDone:
+			t.Fatalf("writes did not block: %v", err)
+		default:
+		}
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- conn.Close() }()
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for a blocked write")
+	}
+	select {
+	case err := <-writeDone:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked write did not end after Close")
+	}
+}
+
+func TestV4ReuseCloseDuringBlockedWrite(t *testing.T) {
+	testReuseCloseDuringBlockedWrite(t, func(handler stalledReadHandler) snell.Service {
+		service, err := snellv5.NewService(snellv5.ServiceOptions{PSK: []byte(testPSK), Handler: handler})
+		require.NoError(t, err)
+		return service
+	}, func(server M.Socksaddr) reuseDialer {
+		client, err := snellv4.NewClient(snellv4.ClientOptions{PSK: []byte(testPSK), Reuse: true, Dialer: N.SystemDialer, Server: server})
+		require.NoError(t, err)
+		return client
+	})
+}
+
+func TestV6ReuseCloseDuringBlockedWrite(t *testing.T) {
+	testReuseCloseDuringBlockedWrite(t, func(handler stalledReadHandler) snell.Service {
+		service, err := snellv6.NewService(snellv6.ServerOptions{PSK: []byte(testPSK), Handler: handler})
+		require.NoError(t, err)
+		return service
+	}, func(server M.Socksaddr) reuseDialer {
 		client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: []byte(testPSK), Reuse: true, Dialer: N.SystemDialer, Server: server})
 		require.NoError(t, err)
 		return client

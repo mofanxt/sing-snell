@@ -483,6 +483,14 @@ func (c *reuseConn) Close() error {
 			c.session.Release(false)
 			return
 		}
+		// A write still holding access may be blocked on the socket. Closing
+		// the session unblocks it; waiting for it to send the zero chunk could
+		// hang forever when the peer stops reading.
+		if !c.access.TryLock() {
+			c.session.Release(false)
+			return
+		}
+		c.access.Unlock()
 		c.closeErr = c.CloseWrite()
 		if c.closeErr != nil {
 			c.session.Release(false)

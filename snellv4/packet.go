@@ -213,9 +213,10 @@ func (c *clientPacketConn) RearHeadroom() int {
 }
 
 func (c *clientPacketConn) WriterMTU() int {
-	// Preserve complete UDP datagrams when this hint sizes an upstream read buffer.
-	// The record writer still checks the protocol payload limit.
-	return buf.UDPBufferSize
+	// This hint sizes the upstream read buffer, so it must hold any datagram
+	// the protocol can carry, also in low memory builds where UDPBufferSize is
+	// smaller. A longer datagram is rejected by the payload limit check.
+	return max(buf.UDPBufferSize, maxPayload)
 }
 
 func (c *clientPacketConn) Upstream() any {

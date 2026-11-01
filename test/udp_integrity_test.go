@@ -275,3 +275,40 @@ func TestV5UDPRejectedReplyBatchKeepsSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "after", string(response.Bytes()))
 }
+
+func udpIntegrityWriterMTU(conn any) int {
+	for {
+		if writer, isWriter := conn.(N.WriterWithMTU); isWriter {
+			return writer.WriterMTU()
+		}
+		wrapper, isWrapper := conn.(interface{ Upstream() any })
+		if !isWrapper {
+			return 0
+		}
+		conn = wrapper.Upstream()
+	}
+}
+
+// WriterMTU sizes the read buffer of the packet copy loop, so it must hold the
+// largest datagram the protocol carries in every build, including low memory.
+func TestUDPWriterMTUHoldsMaxPayload(t *testing.T) {
+	t.Parallel()
+	serverMTU := make(chan int, 1)
+	packetConn := newUDPIntegrityPair(t, udpIntegrityHandler{handle: func(conn N.PacketConn) {
+		serverMTU <- udpIntegrityWriterMTU(conn)
+		buffer := buf.NewPacket()
+		defer buffer.Release()
+		conn.ReadPacket(buffer)
+	}})
+	require.GreaterOrEqual(t, udpIntegrityWriterMTU(packetConn), snell.MaxPayloadLen)
+	request := buf.NewSize(1024)
+	request.Resize(512, 0)
+	request.WriteByte(1)
+	require.NoError(t, packetConn.WritePacket(request, M.ParseSocksaddr("127.0.0.1:443")))
+	select {
+	case mtu := <-serverMTU:
+		require.GreaterOrEqual(t, mtu, snell.MaxPayloadLen)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the server packet conn")
+	}
+}

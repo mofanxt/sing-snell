@@ -17,25 +17,27 @@ import (
 )
 
 type Client struct {
-	psk     []byte
-	userKey []byte
-	mode    Mode
-	reuse   bool
-	profile *Profile
-	dialer  N.Dialer
-	server  M.Socksaddr
+	psk         []byte
+	userKey     []byte
+	mode        Mode
+	fingerprint bool
+	reuse       bool
+	profile     *Profile
+	dialer      N.Dialer
+	server      M.Socksaddr
 
 	pool      reuse.Pool[*reuseSession]
 	closeIdle atomic.Bool
 }
 
 type ClientOptions struct {
-	PSK     []byte
-	UserKey []byte
-	Mode    Mode
-	Reuse   bool
-	Dialer  N.Dialer
-	Server  M.Socksaddr
+	PSK         []byte
+	UserKey     []byte
+	Mode        Mode
+	Fingerprint bool
+	Reuse       bool
+	Dialer      N.Dialer
+	Server      M.Socksaddr
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -49,12 +51,13 @@ func NewClient(options ClientOptions) (*Client, error) {
 		return nil, E.New("snell: unknown v6 mode: ", int(options.Mode))
 	}
 	client := &Client{
-		psk:     options.PSK,
-		userKey: options.UserKey,
-		mode:    options.Mode,
-		reuse:   options.Reuse,
-		dialer:  options.Dialer,
-		server:  options.Server,
+		psk:         options.PSK,
+		userKey:     options.UserKey,
+		mode:        options.Mode,
+		fingerprint: options.Fingerprint,
+		reuse:       options.Reuse,
+		dialer:      options.Dialer,
+		server:      options.Server,
 	}
 	if options.Mode == ModeDefault {
 		client.profile = NewProfile(options.PSK)
@@ -84,6 +87,7 @@ type clientConn struct {
 	net.Conn
 	client      *Client
 	destination M.Socksaddr
+	fingerprint *snell.TCPFingerprint
 
 	access          sync.Mutex
 	reader          reuse.RecordReader
@@ -97,6 +101,10 @@ func (c *clientConn) requestPayload(payload []byte) (*buf.Buffer, error) {
 	// Surge 6.7.0 (11520): SNConnectorV4::targetHandshakeData: writes command 5
 	// for v6 TCP handshakes even when connector reuse is disabled.
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	request := buf.NewSize(requestPayload.Len() + len(payload))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -136,6 +144,10 @@ func (c *clientConn) writeRequest(payload []byte) error {
 
 func (c *clientConn) writeRequestBuffer(buffer *buf.Buffer) error {
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	request := buf.With(buffer.ExtendHeader(requestPayload.Len()))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -300,6 +312,10 @@ func (c *clientConn) FrontHeadroom() int {
 		return c.writer.FrontHeadroom()
 	}
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	switch c.client.mode {
 	case ModeUnsafeRaw:
 		return requestPayload.Len() + snell.HeaderPlainLen

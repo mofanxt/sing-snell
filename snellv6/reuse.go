@@ -33,6 +33,9 @@ func (c *Client) DialContext(ctx context.Context, destination M.Socksaddr) (net.
 		}
 		session.keepOnce.Store(snell.KeepSessionFromContext(ctx))
 		conn, err := session.DialConn(destination)
+		if err == nil && c.fingerprint {
+			conn.(*reuseConn).fingerprint = snell.TCPFingerprintFromContext(ctx)
+		}
 		if err != nil {
 			session.Close()
 			return nil, err
@@ -51,7 +54,11 @@ func (c *Client) DialContext(ctx context.Context, destination M.Socksaddr) (net.
 	}
 	// Surge 6.4.4 (10661): -[SNConnectorV4 targetHandshakeData] appends the connector early data to
 	// the handshake buffer, so the first record carries both.
-	return c.DialEarlyConn(conn, destination), nil
+	result := c.DialEarlyConn(conn, destination)
+	if c.fingerprint {
+		result.(*clientConn).fingerprint = snell.TCPFingerprintFromContext(ctx)
+	}
+	return result, nil
 }
 
 func (c *Client) reuseSession(ctx context.Context) (*reuseSession, error) {
@@ -199,6 +206,7 @@ type reuseConn struct {
 	net.Conn
 	session     *reuseSession
 	destination M.Socksaddr
+	fingerprint *snell.TCPFingerprint
 
 	access          sync.Mutex
 	writer          reuse.RecordWriter
@@ -326,6 +334,10 @@ func (c *reuseConn) ReadBuffer(buffer *buf.Buffer) error {
 
 func (c *reuseConn) writeRequest(payload []byte) error {
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	request := buf.NewSize(requestPayload.Len() + len(payload))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -363,6 +375,10 @@ func (c *reuseConn) writeRequest(payload []byte) error {
 
 func (c *reuseConn) writeRequestBuffer(buffer *buf.Buffer) error {
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	request := buf.With(buffer.ExtendHeader(requestPayload.Len()))
 	err := requestPayload.Write(request)
 	if err != nil {
@@ -588,6 +604,10 @@ func (c *reuseConn) FrontHeadroom() int {
 		return c.writer.FrontHeadroom()
 	}
 	requestPayload := snell.Request{Command: snell.CommandConnectV2, ClientID: c.session.client.userKey, Destination: c.destination}
+	if c.fingerprint != nil {
+		requestPayload.Command = snell.CommandConnectFingerprint
+		requestPayload.TCPFingerprint = c.fingerprint
+	}
 	switch c.session.client.mode {
 	case ModeUnsafeRaw:
 		return requestPayload.Len() + snell.HeaderPlainLen
@@ -667,7 +687,7 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 			}
 		}
 		switch request.Command {
-		case snell.CommandConnect, snell.CommandConnectV2:
+		case snell.CommandConnect, snell.CommandConnectV2, snell.CommandConnectFingerprint:
 		case snell.CommandUDP:
 			// snell-server v6.0.0b4: FUN_00141bc0 rejects UDP tunnel requests when the
 			// first UDP datagram starts in the same decrypted frame as the tunnel request.
@@ -711,6 +731,7 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 		} else {
 			s.reader.SetCache(record)
 		}
+		requestCtx = snell.ContextWithTCPFingerprint(requestCtx, request.TCPFingerprint)
 		s.service.handler.NewConnectionEx(requestCtx, serverConn, source, request.Destination, serverConn.completeLogicalConnection)
 		select {
 		case <-serverConn.completion:

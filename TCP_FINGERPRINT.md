@@ -1,0 +1,9 @@
+# 实验性逐连接 TCP 指纹扩展
+
+基于上游 main 04667b0a321cc83c3401f80d8108e7daf4af98ba。默认关闭；这不是官方 Snell 协议功能，不能对未升级的服务端启用。
+
+v6 ClientOptions/ServerOptions 的 Fingerprint=true 显式允许请求命令 0x7f。每条逻辑 TCP 请求在原有目标地址后携带 uint16 大端长度及版本化元数据，仍在原协议认证与 AEAD 内。字段为版本1、初始TTL、零IPID标志、uint16窗口、选项长度及最多40字节选项。允许MSS、WS、SACK、TS、NOP、EOL；时间戳值必须归零。
+
+通过 ContextWithTCPFingerprint 附加样本。连接复用逐请求重新读取，不在物理隧道上保存“当前设备”。无元数据时仍使用原命令及原字节格式；未知或畸形扩展明确拒绝。元数据不是客户端身份认证，也不证明操作系统。
+
+验证：`go test -race ./...`；根目录测试包括旧格式、截断/非法输入、复用与非复用的交替模板和空样本、应用字节不变。`cmd/fingerprint-probe`仅用于隔离回环实验。完整入口与内核出口实现位于配套 sing-box 分支。

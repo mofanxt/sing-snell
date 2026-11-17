@@ -18,16 +18,18 @@ import (
 )
 
 type Service struct {
-	psk     []byte
-	mode    Mode
-	profile *Profile
-	handler snell.Handler
+	psk         []byte
+	mode        Mode
+	profile     *Profile
+	handler     snell.Handler
+	fingerprint bool
 }
 
 type ServerOptions struct {
-	PSK     []byte
-	Mode    Mode
-	Handler snell.Handler
+	PSK         []byte
+	Mode        Mode
+	Handler     snell.Handler
+	Fingerprint bool
 }
 
 func NewService(options ServerOptions) (*Service, error) {
@@ -41,7 +43,7 @@ func NewService(options ServerOptions) (*Service, error) {
 	if options.Mode != ModeDefault && options.Mode != ModeUnshaped && options.Mode != ModeUnsafeRaw {
 		return nil, E.New("snell: unknown v6 mode: ", int(options.Mode))
 	}
-	service := &Service{psk: options.PSK, mode: options.Mode, handler: options.Handler}
+	service := &Service{psk: options.PSK, mode: options.Mode, handler: options.Handler, fingerprint: options.Fingerprint}
 	if options.Mode == ModeDefault {
 		service.profile = NewProfile(options.PSK)
 	}
@@ -137,10 +139,19 @@ func (s *Service) readRequest(record *buf.Buffer) (snell.Request, error) {
 		}
 	}
 	switch request.Command {
-	case snell.CommandConnect, snell.CommandConnectV2:
+	case snell.CommandConnect, snell.CommandConnectV2, snell.CommandConnectFingerprint:
 		request.Destination, err = snell.ReadConnectAddress(record)
 		if err != nil {
 			return snell.Request{}, err
+		}
+		if request.Command == snell.CommandConnectFingerprint {
+			if !s.fingerprint {
+				return snell.Request{}, E.New("snell: TCP fingerprint extension disabled")
+			}
+			request.TCPFingerprint, err = snell.ReadTCPFingerprint(record)
+			if err != nil {
+				return snell.Request{}, err
+			}
 		}
 	case snell.CommandUDP:
 	default:
@@ -171,7 +182,7 @@ func (s *Service) newConnection(ctx context.Context, conn net.Conn, source M.Soc
 		}
 		s.handler.NewConnectionEx(ctx, serverConn, source, request.Destination, onClose)
 		return nil
-	case snell.CommandConnectV2:
+	case snell.CommandConnectV2, snell.CommandConnectFingerprint:
 		reuseSession := &serverReuseSession[struct{}]{Conn: conn, service: s, transport: transport, reader: reader}
 		return reuseSession.Serve(ctx, source, onClose, record, request)
 	case snell.CommandUDP:
@@ -241,7 +252,7 @@ func (s *MultiService[U]) newConnection(ctx context.Context, conn net.Conn, sour
 		}
 		s.handler.NewConnectionEx(requestCtx, serverConn, source, request.Destination, onClose)
 		return nil
-	case snell.CommandConnectV2:
+	case snell.CommandConnectV2, snell.CommandConnectFingerprint:
 		reuseSession := &serverReuseSession[U]{Conn: conn, service: s.Service, multiService: s, transport: transport, reader: reader}
 		return reuseSession.Serve(ctx, source, onClose, record, request)
 	case snell.CommandUDP:

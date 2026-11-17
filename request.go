@@ -9,9 +9,10 @@ import (
 )
 
 type Request struct {
-	Command     byte
-	ClientID    []byte
-	Destination M.Socksaddr
+	Command        byte
+	ClientID       []byte
+	Destination    M.Socksaddr
+	TCPFingerprint *TCPFingerprint
 }
 
 func (r Request) Write(buffer *buf.Buffer) error {
@@ -29,6 +30,11 @@ func (r Request) Write(buffer *buf.Buffer) error {
 		}
 	}
 	switch r.Command {
+	case CommandConnectFingerprint:
+		if err := WriteConnectAddress(buffer, r.Destination); err != nil {
+			return err
+		}
+		return WriteTCPFingerprint(buffer, r.TCPFingerprint)
 	case CommandConnect, CommandConnectV2:
 		return WriteConnectAddress(buffer, r.Destination)
 	case CommandPing, CommandUDP:
@@ -41,6 +47,12 @@ func (r Request) Write(buffer *buf.Buffer) error {
 func (r Request) Len() int {
 	requestLen := 3 + len(r.ClientID)
 	switch r.Command {
+	case CommandConnectFingerprint:
+		optionLen := 0
+		if r.TCPFingerprint != nil {
+			optionLen = len(r.TCPFingerprint.Options)
+		}
+		return requestLen + 1 + len(r.Destination.AddrString()) + 2 + 2 + 6 + optionLen
 	case CommandConnect, CommandConnectV2:
 		return requestLen + 1 + len(r.Destination.AddrString()) + 2
 	default:

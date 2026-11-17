@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,69 +111,119 @@ func (d *fpDialer) DialContext(ctx context.Context, n string, a M.Socksaddr) (ne
 }
 
 func TestFingerprintPerLogicalConnection(t *testing.T) {
-	for _, reuse := range []bool{false, true} {
-		t.Run(map[bool]string{false: "plain", true: "reuse"}[reuse], func(t *testing.T) {
-			h := fpHandler{make(chan *snell.TCPFingerprint, 16)}
-			s, err := snellv6.NewMultiService[int](snellv6.ServerOptions{PSK: []byte("test-fingerprint-key-1234"), Handler: h, Fingerprint: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = s.UpdateUsers([]int{1}, [][]byte{[]byte("test-user")}); err != nil {
-				t.Fatal(err)
-			}
-			l, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer l.Close()
-			go func() {
-				for {
-					c, e := l.Accept()
-					if e != nil {
-						return
+	for _, mode := range []struct {
+		name                          string
+		send, receive, absent, reject bool
+	}{
+		{"both_enabled", true, true, false, false},
+		{"legacy_client", false, true, false, false},
+		{"legacy_server", false, false, false, false},
+		{"no_metadata_to_legacy_server", true, false, true, false},
+		{"extension_to_legacy_server_rejected", true, false, false, true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			for _, reuse := range []bool{false, true} {
+				t.Run(map[bool]string{false: "plain", true: "reuse"}[reuse], func(t *testing.T) {
+					h := fpHandler{make(chan *snell.TCPFingerprint, 16)}
+					serverErrors := make(chan error, 16)
+					s, err := snellv6.NewMultiService[int](snellv6.ServerOptions{PSK: []byte("test-fingerprint-key-1234"), Handler: h, Fingerprint: mode.receive})
+					if err != nil {
+						t.Fatal(err)
 					}
-					go s.NewConnection(context.Background(), c, M.SocksaddrFromNet(c.RemoteAddr()), nil)
-				}
-			}()
-			d := &fpDialer{Dialer: N.SystemDialer}
-			client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: []byte("test-fingerprint-key-1234"), UserKey: []byte("test-user"), Server: M.ParseSocksaddr(l.Addr().String()), Dialer: d, Reuse: reuse, Fingerprint: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer client.Close()
-			for _, f := range []*snell.TCPFingerprint{sampleFingerprint(65535), nil, sampleFingerprint(32768), nil} {
-				ctx := snell.ContextWithTCPFingerprint(context.Background(), f)
-				c, e := client.DialContext(ctx, M.ParseSocksaddr("example.com:443"))
-				if e != nil {
-					t.Fatal(e)
-				}
-				c.SetDeadline(time.Now().Add(3 * time.Second))
-				if _, e = c.Write([]byte("tls-payload-unchanged")); e != nil {
-					t.Fatal(e)
-				}
-				if e = N.CloseWrite(c); e != nil {
-					t.Fatal(e)
-				}
-				b, e := io.ReadAll(c)
-				if e != nil {
-					t.Fatal(e)
-				}
-				if string(b) != "tls-payload-unchanged" {
-					t.Fatal("payload changed")
-				}
-				select {
-				case got := <-h.seen:
-					if !reflect.DeepEqual(got, f) {
-						t.Fatalf("metadata leaked: got=%v want=%v", got, f)
+					if err = s.UpdateUsers([]int{1}, [][]byte{[]byte("test-user")}); err != nil {
+						t.Fatal(err)
 					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("no metadata")
-				}
-				c.Close()
-				time.Sleep(20 * time.Millisecond)
-			}
-			if reuse && d.count.Load() != 1 {
-				t.Fatalf("reuse not exercised: dials=%d", d.count.Load())
+					l, err := net.Listen("tcp", "127.0.0.1:0")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer l.Close()
+					go func() {
+						for {
+							c, e := l.Accept()
+							if e != nil {
+								return
+							}
+							go func(conn net.Conn) {
+								if err := s.NewConnection(context.Background(), conn, M.SocksaddrFromNet(conn.RemoteAddr()), nil); err != nil {
+									serverErrors <- err
+									conn.Close()
+								}
+							}(c)
+						}
+					}()
+					d := &fpDialer{Dialer: N.SystemDialer}
+					client, err := snellv6.NewClient(snellv6.ClientOptions{PSK: []byte("test-fingerprint-key-1234"), UserKey: []byte("test-user"), Server: M.ParseSocksaddr(l.Addr().String()), Dialer: d, Reuse: reuse, Fingerprint: mode.send})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer client.Close()
+					samples := []*snell.TCPFingerprint{sampleFingerprint(65535), nil, sampleFingerprint(32768), nil}
+					if mode.absent {
+						samples = []*snell.TCPFingerprint{nil, nil}
+					}
+					if mode.reject {
+						samples = samples[:1]
+					}
+					for _, f := range samples {
+						ctx := snell.ContextWithTCPFingerprint(context.Background(), f)
+						c, e := client.DialContext(ctx, M.ParseSocksaddr("example.com:443"))
+						if e != nil {
+							t.Fatal(e)
+						}
+						c.SetDeadline(time.Now().Add(3 * time.Second))
+						if _, e = c.Write([]byte("tls-payload-unchanged")); e != nil {
+							t.Fatal(e)
+						}
+						if e = N.CloseWrite(c); e != nil {
+							t.Fatal(e)
+						}
+						b, e := io.ReadAll(c)
+						if mode.reject {
+							c.Close()
+							select {
+							case serverErr := <-serverErrors:
+								if !strings.Contains(serverErr.Error(), "unsupported command") {
+									t.Fatalf("unexpected rejection: %v", serverErr)
+								}
+							case <-time.After(time.Second):
+								t.Fatal("server did not reject unsupported command")
+							}
+							if string(b) == "tls-payload-unchanged" {
+								t.Fatal("unsupported extension unexpectedly accepted")
+							}
+							select {
+							case <-h.seen:
+								t.Fatal("unsupported request reached application")
+							default:
+							}
+							continue
+						}
+						if e != nil {
+							t.Fatal(e)
+						}
+						if string(b) != "tls-payload-unchanged" {
+							t.Fatal("payload changed")
+						}
+						select {
+						case got := <-h.seen:
+							want := f
+							if !mode.send {
+								want = nil
+							}
+							if !reflect.DeepEqual(got, want) {
+								t.Fatalf("metadata leaked: got=%v want=%v", got, want)
+							}
+						case <-time.After(3 * time.Second):
+							t.Fatal("no metadata")
+						}
+						c.Close()
+						time.Sleep(20 * time.Millisecond)
+					}
+					if reuse && d.count.Load() != 1 {
+						t.Fatalf("reuse not exercised: dials=%d", d.count.Load())
+					}
+				})
 			}
 		})
 	}

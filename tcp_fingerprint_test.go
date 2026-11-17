@@ -183,7 +183,7 @@ func TestFingerprintPerLogicalConnection(t *testing.T) {
 							c.Close()
 							select {
 							case serverErr := <-serverErrors:
-								if !strings.Contains(serverErr.Error(), "unsupported command") {
+								if !strings.Contains(serverErr.Error(), "TCP fingerprint extension disabled") {
 									t.Fatalf("unexpected rejection: %v", serverErr)
 								}
 							case <-time.After(time.Second):

@@ -33,9 +33,16 @@ func main() {
 	defer c.Close()
 	apple := &snell.TCPFingerprint{TTL: 64, Window: 65535, ZeroIPID: true, Options: []byte{2, 4, 5, 180, 1, 3, 3, 6, 1, 1, 8, 10, 0, 0, 0, 0, 0, 0, 0, 0, 4, 2, 0, 0}}
 	noTS := &snell.TCPFingerprint{TTL: 128, Window: 64240, Options: []byte{2, 4, 5, 180, 1, 3, 3, 8, 1, 1, 4, 2}}
-	for i, f := range []*snell.TCPFingerprint{apple, noTS, apple, noTS, nil, apple} {
+	android := &snell.TCPFingerprint{TTL: 64, Window: 64240, Options: []byte{2, 4, 5, 180, 4, 2, 8, 10, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 3, 7}}
+	profiles := []struct {
+		name   string
+		sample *snell.TCPFingerprint
+	}{
+		{"apple", apple}, {"android", android}, {"no_timestamp", noTS}, {"apple", apple}, {"no_timestamp", noTS}, {"original", nil}, {"apple", apple},
+	}
+	for i, profile := range profiles {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		conn, e := c.DialContext(snell.ContextWithTCPFingerprint(ctx, f), M.ParseSocksaddr(cfg.Target))
+		conn, e := c.DialContext(snell.ContextWithTCPFingerprint(ctx, profile.sample), M.ParseSocksaddr(cfg.Target))
 		if e != nil {
 			panic(e)
 		}
@@ -57,13 +64,9 @@ func main() {
 		if e = json.Unmarshal(body, &observed); e != nil {
 			panic(e)
 		}
-		kind := "original"
-		if f == apple {
-			kind = "apple"
-		} else if f == noTS {
-			kind = "no_timestamp"
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"profile": profile.name, "observed": observed}); err != nil {
+			panic(err)
 		}
-		json.NewEncoder(os.Stdout).Encode(map[string]any{"profile": kind, "observed": observed})
 		N.CloseWrite(conn)
 		io.Copy(io.Discard, conn)
 		conn.Close()

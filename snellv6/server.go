@@ -2,6 +2,7 @@ package snellv6
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 
@@ -117,7 +118,15 @@ func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Reques
 	return auth.ContextWithUser(ctx, user), nil
 }
 
-func (s *Service) readRequest(record *buf.Buffer) (snell.Request, error) {
+func (s *Service) readRequest(record *buf.Buffer, reader reuse.RecordReader) (snell.Request, error) {
+	// 扩展请求头可能跨越多个加密记录。解码器按字段定长读取，末条记录的应用数据留在 reader 内。
+	if s.fingerprint && s.mode == ModeDefault && record.Len() >= 2 && record.Bytes()[1] == snell.CommandConnectFingerprint {
+		req, err := snell.ReadV6Request(io.MultiReader(record, reader), true)
+		if err != nil {
+			reader.ReleaseCache()
+		}
+		return req, err
+	}
 	return snell.ReadV6Request(record, s.fingerprint)
 }
 
@@ -127,7 +136,7 @@ func (s *Service) newConnection(ctx context.Context, conn net.Conn, source M.Soc
 	if err != nil {
 		return E.Cause(err, "read request")
 	}
-	request, err := s.readRequest(record)
+	request, err := s.readRequest(record, reader)
 	if err != nil {
 		record.Release()
 		return E.Cause(err, "decode request")
@@ -192,7 +201,7 @@ func (s *MultiService[U]) newConnection(ctx context.Context, conn net.Conn, sour
 	if err != nil {
 		return E.Cause(err, "read request")
 	}
-	request, err := s.readRequest(record)
+	request, err := s.readRequest(record, reader)
 	if err != nil {
 		record.Release()
 		return E.Cause(err, "decode request")

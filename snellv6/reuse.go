@@ -785,7 +785,7 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 			}
 			return E.Cause(err, "read request")
 		}
-		request, err = s.service.readRequest(record)
+		request, err = s.service.readRequest(record, s.reader)
 		if err != nil {
 			record.Release()
 			s.Conn.Close()

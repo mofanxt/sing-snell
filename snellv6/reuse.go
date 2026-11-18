@@ -681,6 +681,8 @@ func (s *serverReuseSession[U]) Serve(ctx context.Context, source M.Socksaddr, o
 		if s.multiService != nil && request.Command != snell.CommandPing {
 			requestCtx, err = s.multiService.authenticate(ctx, request)
 			if err != nil {
+				// 跨记录请求的最后一条记录可能还保存着早期数据。
+				s.reader.ReleaseCache()
 				record.Release()
 				s.Conn.Close()
 				return err

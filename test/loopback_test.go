@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
+	snell "github.com/mofanxt/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 

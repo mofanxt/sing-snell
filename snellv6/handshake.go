@@ -5,8 +5,8 @@ import (
 	"io"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/internal/reuse"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/internal/reuse"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	N "github.com/sagernet/sing/common/network"

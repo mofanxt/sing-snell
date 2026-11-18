@@ -61,6 +61,15 @@ func (r Request) Len() int {
 }
 
 func ReadRequest(reader io.Reader) (Request, error) {
+	return readRequest(reader, false, false)
+}
+
+// ReadV6Request 按 v6 规则读取请求，仅在调用方显式允许时解析私有扩展。
+func ReadV6Request(reader io.Reader, allowFingerprint bool) (Request, error) {
+	return readRequest(reader, allowFingerprint, true)
+}
+
+func readRequest(reader io.Reader, allowFingerprint, v6 bool) (Request, error) {
 	prefix := make([]byte, 3)
 	_, err := io.ReadFull(reader, prefix)
 	if err != nil {
@@ -71,6 +80,10 @@ func ReadRequest(reader io.Reader) (Request, error) {
 	}
 	clientIDLen := int(prefix[2])
 	request := Request{Command: prefix[1]}
+	// v6 的 PING 忽略前缀中的客户端 ID 长度。
+	if v6 && request.Command == CommandPing {
+		return request, nil
+	}
 	if clientIDLen > 0 {
 		request.ClientID = make([]byte, clientIDLen)
 		_, err = io.ReadFull(reader, request.ClientID)
@@ -79,10 +92,24 @@ func ReadRequest(reader io.Reader) (Request, error) {
 		}
 	}
 	switch request.Command {
+	case CommandConnectFingerprint:
+		if !allowFingerprint {
+			if v6 {
+				return Request{}, E.New("snell: TCP fingerprint extension disabled")
+			}
+			return Request{}, E.Extend(ErrUnsupportedCommand, request.Command)
+		}
+		fallthrough
 	case CommandConnect, CommandConnectV2:
 		request.Destination, err = ReadConnectAddress(reader)
 		if err != nil {
 			return Request{}, err
+		}
+		if request.Command == CommandConnectFingerprint {
+			request.TCPFingerprint, err = ReadTCPFingerprint(reader)
+			if err != nil {
+				return Request{}, err
+			}
 		}
 	case CommandPing, CommandUDP:
 	default:

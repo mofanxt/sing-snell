@@ -11,8 +11,8 @@ import (
 	"os"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/snellv6"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/snellv6"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )

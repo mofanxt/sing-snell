@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
+	snell "github.com/mofanxt/sing-snell"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"

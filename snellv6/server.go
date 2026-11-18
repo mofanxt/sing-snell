@@ -2,13 +2,12 @@ package snellv6
 
 import (
 	"context"
-	"io"
 	"net"
 	"sync"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/internal/eof"
-	"github.com/sagernet/sing-snell/internal/reuse"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/internal/eof"
+	"github.com/mofanxt/sing-snell/internal/reuse"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -119,48 +118,7 @@ func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Reques
 }
 
 func (s *Service) readRequest(record *buf.Buffer) (snell.Request, error) {
-	prefix := make([]byte, 3)
-	_, err := io.ReadFull(record, prefix)
-	if err != nil {
-		return snell.Request{}, err
-	}
-	if prefix[0] != snell.RequestVersion {
-		return snell.Request{}, E.Extend(snell.ErrBadVersion, "request version ", prefix[0])
-	}
-	request := snell.Request{Command: prefix[1]}
-	// snell-server v6.0.0b4: FUN_00141bc0 handles SN_COMMAND_PING immediately after
-	// the version/command bytes and aborts with PONG data, without consuming client-id bytes.
-	if request.Command == snell.CommandPing {
-		return request, nil
-	}
-	clientIDLen := int(prefix[2])
-	if clientIDLen > 0 {
-		request.ClientID = make([]byte, clientIDLen)
-		_, err = io.ReadFull(record, request.ClientID)
-		if err != nil {
-			return snell.Request{}, err
-		}
-	}
-	switch request.Command {
-	case snell.CommandConnect, snell.CommandConnectV2, snell.CommandConnectFingerprint:
-		request.Destination, err = snell.ReadConnectAddress(record)
-		if err != nil {
-			return snell.Request{}, err
-		}
-		if request.Command == snell.CommandConnectFingerprint {
-			if !s.fingerprint {
-				return snell.Request{}, E.New("snell: TCP fingerprint extension disabled")
-			}
-			request.TCPFingerprint, err = snell.ReadTCPFingerprint(record)
-			if err != nil {
-				return snell.Request{}, err
-			}
-		}
-	case snell.CommandUDP:
-	default:
-		return snell.Request{}, E.Extend(snell.ErrUnsupportedCommand, request.Command)
-	}
-	return request, nil
+	return snell.ReadV6Request(record, s.fingerprint)
 }
 
 func (s *Service) newConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {

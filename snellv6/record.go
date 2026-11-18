@@ -6,8 +6,8 @@ import (
 	"io"
 	"sync"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/internal/eof"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/internal/eof"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"

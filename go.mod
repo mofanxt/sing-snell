@@ -1,4 +1,4 @@
-module github.com/sagernet/sing-snell
+module github.com/mofanxt/sing-snell
 
 go 1.24.0
 

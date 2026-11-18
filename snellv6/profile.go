@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math/bits"
 
-	snell "github.com/sagernet/sing-snell"
+	snell "github.com/mofanxt/sing-snell"
 
 	"golang.org/x/crypto/blake2b"
 )

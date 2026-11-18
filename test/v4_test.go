@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/snellv4"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/snellv4"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"

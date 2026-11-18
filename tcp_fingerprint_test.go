@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/snellv6"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/snellv6"
 	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -241,4 +241,23 @@ func FuzzTCPFingerprint(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestExtendedRequestReader(t *testing.T) {
+	r := snell.Request{Command: snell.CommandConnectFingerprint, ClientID: []byte("test"), Destination: M.ParseSocksaddr("example.org:443"), TCPFingerprint: sampleFingerprint(4096)}
+	b := buf.NewSize(r.Len())
+	defer b.Release()
+	if err := r.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := snell.ReadV6Request(bytes.NewReader(b.Bytes()), true)
+	if err != nil || !reflect.DeepEqual(got, r) {
+		t.Fatalf("roundtrip: %+v %v", got, err)
+	}
+	if _, err := snell.ReadV6Request(bytes.NewReader(b.Bytes()), false); err == nil {
+		t.Fatal("disabled extension accepted")
+	}
+	if _, err := snell.ReadRequest(bytes.NewReader(b.Bytes())); err == nil {
+		t.Fatal("legacy reader accepted extension")
+	}
 }

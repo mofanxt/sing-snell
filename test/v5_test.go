@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	snell "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/snellv4"
-	"github.com/sagernet/sing-snell/snellv5"
+	snell "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/snellv4"
+	"github.com/mofanxt/sing-snell/snellv5"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"

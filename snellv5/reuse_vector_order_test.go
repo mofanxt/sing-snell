@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sagernet/sing-snell/internal/reuse"
+	"github.com/mofanxt/sing-snell/internal/reuse"
 	"github.com/sagernet/sing/common/buf"
 	N "github.com/sagernet/sing/common/network"
 )

@@ -47,6 +47,9 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if len(options.UserKey) > 255 {
 		return nil, E.New("snell: user key too long")
 	}
+	if options.Fingerprint && options.Mode == ModeUnsafeRaw {
+		return nil, E.New("snell: TCP fingerprint requires an encrypted v6 mode")
+	}
 	if options.Mode != ModeDefault && options.Mode != ModeUnshaped && options.Mode != ModeUnsafeRaw {
 		return nil, E.New("snell: unknown v6 mode: ", int(options.Mode))
 	}

@@ -40,6 +40,9 @@ func NewService(options ServerOptions) (*Service, error) {
 	if len(options.PSK) < 12 || len(options.PSK) > 255 {
 		return nil, E.New("snell: psk length must be between 12 and 255 bytes")
 	}
+	if options.Fingerprint && options.Mode == ModeUnsafeRaw {
+		return nil, E.New("snell: TCP fingerprint requires an encrypted v6 mode")
+	}
 	if options.Mode != ModeDefault && options.Mode != ModeUnshaped && options.Mode != ModeUnsafeRaw {
 		return nil, E.New("snell: unknown v6 mode: ", int(options.Mode))
 	}
